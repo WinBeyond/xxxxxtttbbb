@@ -1,0 +1,138 @@
+version: 2
+env:
+  PROJECT_ID:
+    value: ""
+    type: string
+  APP_NAME:
+    value: "XXXX"
+    type: string
+  SERVER_NAME:
+    value: "xxx"
+    type: string
+  IMAGE_NAME:
+    type: string
+    value: "csighub.tencentyun.com/xxxx-/xxx"
+  TOKEN:
+    type: string
+    readonly: true
+    secret: WZ49GHLOXyBkyEFYkiheNZ61oV0ojec04seYosmM/cEjK/GQaYzGYzh3hSNA/rhhWoqh7e/rE1TNmfT5ms33XLOBEYMXvugXv+Qyg1Y/974b2/pkE/48uzFMqwLhyQC2PzMOr3prCFUlGa0FSkadbqOJpGf9h5+BCghWmZ5Hb0g=
+  REGISTRY_USER:
+    type: string
+    value: qtarunner
+  REGISTRY_PASSWD:
+    type: string
+    readonly: true
+    secret: K=>M\*U6u@mHq6MN
+  DOCKER_ARGS_NETWORK: >-
+    --network=host --build-arg https_proxy=http://devproxy.oa.com:8080
+    --build-arg http_proxy=http://devproxy.oa.com:8080
+  GO_VERSION:
+    value: 16
+    type: select
+    option: 11;12;13;14;15;16
+stages:
+  - stage: 准备阶段
+    tasks:
+      - cmds:
+          - params:
+              operation: '1'
+            plugin: git_credentials
+        task: 工蜂认证
+  - stage: 程序编译
+    tasks:
+      - cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - sh ./build/build.sh
+        task: "build.sh"
+  - stage: 镜像构建
+    tasks:
+      - cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - '#!/bin/bash'
+                - cd build
+                - curTime=$(date +%Y%m%d_%H%m);
+                - 'TAG=${QCI_BUILD_NUMBER}_${curTime}_${QCI_TRIGGER}'
+                - IMAGE_BASE_NAME=$(echo $IMAGE_NAME | cut -f 3 -d '/')
+                - 'echo "IMAGE_BASE_NAME=${IMAGE_BASE_NAME}" >> $QCI_ENV_FILE;'
+                - 'echo "TAG=${TAG}" >> $QCI_ENV_FILE'
+                - >-
+                  docker build -t $IMAGE_BASE_NAME:$TAG ${DOCKER_ARGS_NETWORK}
+                  -f Dockerfile --build-arg SERVER_NAME=${SERVER_NAME} .
+                - ''
+        task: "docker build"
+  - stage: 镜像预处理
+    tasks:
+      - cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - >-
+                  echo ${IMAGE_NAME} | grep ccs.tencentyun.com && (echo
+                  "TCR=Y" >> $QCI_ENV_FILE) ||  echo not tcr
+        task: 是否TCR
+      - cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - >-
+                  echo ${IMAGE_NAME} | grep csighub && (echo "CSIGHUB=Y" >>
+                  $QCI_ENV_FILE)  || echo not csighub
+        task: 是否CSIGHUB
+  - stage: 镜像推送
+    tasks:
+      - task: TCR PUSH
+        cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - namespace=$(echo $IMAGE_NAME | cut -f 2 -d '/')
+                - >-
+                  repo_id=$(curl -s -H "Authorization: Token $TOKEN"
+                  "http://tencent.coding.woa.com/api/artifacts/rest-api/repositories?type=2&mirror_type=8&project_id=${PROJECT_ID}&pageSize=100&name=$namespace"
+                  | python -c "import sys, json;
+                  print(json.load(sys.stdin)['data']['list'][0]['id'])")
+                - echo "REPO_ID=$repo_id" >> $QCI_ENV_FILE
+                - echo "params is $REPO_ID/$IMAGE_BASE_NAME"
+          - plugin: artifacts_docker_push_ccr
+            params:
+              docker-registry: ccr.ccs.tencentyun.com
+              repository: '${REPO_ID}'
+              package: '${IMAGE_BASE_NAME}'
+              version: '${TAG}'
+        if: $TCR=Y
+      - task: CSIG HUB PUSH
+        cmds:
+          - plugin: cmds
+            params:
+              cmds:
+                - 'docker tag  ${IMAGE_BASE_NAME}:${TAG} ${IMAGE_NAME}:${TAG}'
+          - params:
+              metrics: >-
+                {"appType": "ka-app", appName":"${APP_NAME}", "serviceType":
+                "ka-service", "serviceName": "${SERVER_NAME}", "creator": "", "createAt": ""}
+              package: '${IMAGE_NAME}'
+              password: '${REGISTRY_PASSWD}'
+              project_id: ${PROJECT_ID}
+              username: '${REGISTRY_USER}'
+              version: '${TAG}'
+            plugin: artifacts_docker_push_appmgr
+            version: '1.0'
+        if: $CSIGHUB=Y
+worker:
+  label: PUBLIC
+  language: 'go-${GO_VERSION}'
+mr:
+  action: []
+trigger:
+  branches:
+    include:
+      - master
+  paths:
+    include:
+      - "/cmd/xxx/"
+      - "/internal/services/xxx/"
+  tags: {}
